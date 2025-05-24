@@ -6,6 +6,8 @@ public class UserHolder {
     private static final ThreadLocal<UserDTO> tl = new ThreadLocal<>();
 
     public static void saveUser(UserDTO user){
+
+//        UserDTO userDTO = new UserDTO(user);
         tl.set(user);
     }
 
