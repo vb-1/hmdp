@@ -2,7 +2,9 @@ package com.hmdp.service.impl;
 
 import cn.hutool.core.bean.BeanUtil;
 import cn.hutool.core.bean.copier.CopyOptions;
+import cn.hutool.core.lang.UUID;
 import cn.hutool.core.util.RandomUtil;
+import cn.hutool.core.util.StrUtil;
 import com.baomidou.mybatisplus.extension.conditions.query.QueryChainWrapper;
 import com.baomidou.mybatisplus.extension.service.impl.ServiceImpl;
 import com.hmdp.dto.LoginFormDTO;
@@ -11,6 +13,7 @@ import com.hmdp.dto.UserDTO;
 import com.hmdp.entity.User;
 import com.hmdp.mapper.UserMapper;
 import com.hmdp.service.IUserService;
+import com.hmdp.utils.JwtUtils;
 import com.hmdp.utils.RegexUtils;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.data.redis.core.StringRedisTemplate;
@@ -21,7 +24,6 @@ import javax.servlet.http.HttpSession;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.Random;
-import java.util.UUID;
 import java.util.concurrent.TimeUnit;
 
 import static com.hmdp.utils.RedisConstants.*;
@@ -60,8 +62,11 @@ public class UserServiceImpl extends ServiceImpl<UserMapper, User> implements IU
         //5.发送验证码
         log.debug("发送验证码成功，验证码：{}", code);
 
-        return Result.ok();
+        return Result.ok(code);
     }
+
+    @Resource // 注入JwtUtils
+    private JwtUtils jwtUtils;
 
     @Override
     public Result login(LoginFormDTO loginForm, HttpSession session) {
@@ -86,24 +91,41 @@ public class UserServiceImpl extends ServiceImpl<UserMapper, User> implements IU
             //用户不存在，创建新用户
             user = createUserWithPhone(phone);
         }
-        //6.保存用户到session   每一个session都有一个session id  每次携带cookie，cookie中带有这个session id，访问都能找到对应的session
-//        session.setAttribute("user", BeanUtil.copyProperties(user, UserDTO.class));
-        //6.redis 保存
-        //6.1 uuid生成随机token，作为令牌
-        String token = UUID.randomUUID().toString();
-        //6.2 将User 对象转换为HashMap存储
         UserDTO userDTO = BeanUtil.copyProperties(user, UserDTO.class);
-        Map<String, Object> userMap = BeanUtil.beanToMap(userDTO, new HashMap<>(),
-                CopyOptions.create().
-                        setIgnoreNullValue(true).
-                        setFieldValueEditor((fieldName, fieldValue) -> fieldValue.toString()));
-        //6.3 redis存储
-        String tokenKey = LOGIN_USER_KEY + token;
-        stringRedisTemplate.opsForHash().putAll(tokenKey, userMap);
-        //6.4设置过期时间，参照session的30min
-        stringRedisTemplate.expire(tokenKey, LOGIN_USER_TTL, TimeUnit.MINUTES);
-        System.out.println(token);
-        return Result.ok(token);
+
+        // 1. 长令牌逻辑: 生成SessionID, 并在Redis中创建用户Session数据
+        String sessionId = UUID.randomUUID().toString(true); // SessionID 作为长令牌的核心标识
+        String longTokenRedisKey = LOGIN_USER_KEY_PREFIX + sessionId;
+
+        Map<String, Object> userMapForRedis = BeanUtil.beanToMap(userDTO, new HashMap<>(),
+                CopyOptions.create()
+                        .setIgnoreNullValue(true)
+                        .setFieldValueEditor((fieldName, fieldValue) -> {
+                            if (fieldValue == null) return null; // 防止null转为"null"
+                            return fieldValue.toString();
+                        }));
+
+        stringRedisTemplate.opsForHash().putAll(longTokenRedisKey, userMapForRedis);
+        stringRedisTemplate.expire(longTokenRedisKey, LOGIN_USER_TTL_DAYS, TimeUnit.DAYS);
+        log.debug("长令牌 Session 已存入 Redis, Key: {}, 过期时间: {} 天", longTokenRedisKey, LOGIN_USER_TTL_DAYS);
+
+        // 2. 短令牌逻辑: 根据用户ID和一个较短的过期时间如1天，生成短令牌 (JWT)
+        String shortToken = jwtUtils.generateShortToken(userDTO);
+        log.debug("短令牌 JWT 已生成, 过期时间: {} ms", jwtUtils.getShortTokenExpirationMillis());
+
+
+        // 3. 用户登录服务对长短令牌分别加密得到数字签名后成功响应客户端，并下发长短令牌。
+        //    长令牌：long_token = SessionID (不需要额外签名, SessionID本身是凭证)
+        //    短令牌：short_token = 用户ID+用户登录设备ID+过期时间+数字签名 (JWT本身已包含这些)
+        Map<String, String> tokenResultMap = new HashMap<>();
+        tokenResultMap.put("long_token", sessionId); // 直接下发SessionID作为长令牌
+        tokenResultMap.put("short_token", shortToken); // 下发JWT作为短令牌
+
+        // 清除验证码
+        stringRedisTemplate.delete(LOGIN_CODE_KEY + phone);
+
+        log.info("用户 {} 登录成功. Long-token: {}, Short-token: {}", userDTO.getId(), sessionId, shortToken);
+        return Result.ok(tokenResultMap);
     }
 
     private User createUserWithPhone(String phone) {
@@ -114,5 +136,23 @@ public class UserServiceImpl extends ServiceImpl<UserMapper, User> implements IU
         //2.保存用户 mybatis plus 保存
         save(user);
         return user;
+    }
+    /**
+     * 用户登出 (根据长令牌 SessionID 清理Redis中的Session)
+     * @param longTokenValue 即 SessionID
+     * @return Result
+     */
+    public Result logout(String longTokenValue) {
+        if (StrUtil.isBlank(longTokenValue)) {
+            return Result.fail("长令牌不能为空");
+        }
+        String longTokenRedisKey = LOGIN_USER_KEY_PREFIX + longTokenValue;
+        Boolean deleted = stringRedisTemplate.delete(longTokenRedisKey);
+        if (Boolean.TRUE.equals(deleted)) {
+            log.info("用户登出成功，已删除Redis Session: {}", longTokenRedisKey);
+            return Result.ok("登出成功");
+        }
+        log.warn("尝试登出失败或Session已过期/不存在: {}", longTokenRedisKey);
+        return Result.ok("已登出或会话不存在"); // 或者 Result.fail("会话不存在")
     }
 }

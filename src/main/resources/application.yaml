@@ -30,16 +30,24 @@ spring:
       buffer-memory: 33554432
       key-serializer: org.apache.kafka.common.serialization.StringSerializer
       value-serializer: org.springframework.kafka.support.serializer.JsonSerializer
+      acks: all
     consumer:
-      group-id: crm-user-service
-      auto-offset-reset: earliest
-      max-poll-records: 4000
-      enable-auto-commit: true
-      auto-commit-interval: 1000
+      group-id: voucher-order-group  # 1. 消费者组ID
+      auto-offset-reset: earliest    # 2. 偏移量重置策略
+      max-poll-records: 4000            # 3. 单次拉取最大记录数
+      enable-auto-commit: true          # 4. 是否启用自动提交偏移量
+      auto-commit-interval: 1000        # 5. 自动提交偏移量的时间间隔 (毫秒)
       key-deserializer: org.apache.kafka.common.serialization.StringDeserializer
       value-deserializer: org.springframework.kafka.support.serializer.JsonDeserializer
       properties:
         spring.json.trusted.packages: "com.hmdp.entity" # <--- 添加或修改此行
+  hmdp:
+    jwt:
+      secret: "YourVeryLongAndSecureSecretKeyForHmdpAppPleaseChangeThis" # 务必修改为一个安全的密钥
+      short-token:
+#        expiration-millis: 86400000 # 短令牌有效期1天 (毫秒)
+         expiration-millis: 30000 # 测试时可以设置为1分钟
+      issuer: "hmdp-app" # 签发者
 mybatis-plus:
   type-aliases-package: com.hmdp.entity # 别名扫描包
 logging:

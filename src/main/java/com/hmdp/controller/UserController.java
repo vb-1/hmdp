@@ -1,6 +1,7 @@
 package com.hmdp.controller;
 
 
+import cn.hutool.core.util.StrUtil;
 import com.hmdp.dto.LoginFormDTO;
 import com.hmdp.dto.Result;
 import com.hmdp.dto.UserDTO;
@@ -13,7 +14,10 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.web.bind.annotation.*;
 
 import javax.annotation.Resource;
+import javax.servlet.http.HttpServletRequest;
 import javax.servlet.http.HttpSession;
+
+import static com.hmdp.utils.SystemConstants.HEADER_LONG_TOKEN;
 
 /**
  * <p>
@@ -58,9 +62,15 @@ public class UserController {
      * @return 无
      */
     @PostMapping("/logout")
-    public Result logout(){
-        // TODO 实现登出功能
-        return Result.fail("功能未完成");
+    public Result logout(HttpServletRequest request) {
+        // 从请求头获取 long_token (SessionID)
+        String longTokenValue = request.getHeader(HEADER_LONG_TOKEN);
+        if (StrUtil.isBlank(longTokenValue)) {
+            // 如果客户端没有传长令牌，可能客户端已自行清理，可以认为操作成功或者提示参数缺失
+            log.warn("登出请求未携带长令牌");
+            return Result.ok("登出操作完成（客户端可能未提供令牌）");
+        }
+        return userService.logout(longTokenValue);
     }
 
     @GetMapping("/me")
